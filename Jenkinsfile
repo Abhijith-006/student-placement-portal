@@ -1,31 +1,29 @@
+
 pipeline {
     agent any
 
-    
     parameters {
         choice(
             name: 'DEPLOY_MODE',
             choices: ['NORMAL', 'FAULTY_TEST'],
-            description: 'Choose NORMAL for a regular deployment or FAULTY_TEST to test automatic rollback.'
+            description: 'NORMAL deploys the portal. FAULTY_TEST verifies automatic rollback.'
         )
     }
-
 
     environment {
         DOCKER_IMAGE = 'abhijith006/student-placement-portal'
         DEPLOYMENT = 'placement-portal'
         CONTAINER_NAME = 'placement-portal'
+        SERVICE_NAME = 'placement-portal-service'
     }
 
     stages {
-
-        stage('Clone Code') {
+        stage('Checkout') {
             steps {
-                echo 'Source code is checked out from GitHub.'
+                echo 'Source code checked out from GitHub.'
             }
         }
 
-                
         stage('Build Docker Image') {
             steps {
                 script {
@@ -37,18 +35,20 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Push Image to Docker Hub') {
             steps {
                 script {
                     def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
                         ? "faulty-${env.BUILD_NUMBER}"
                         : env.BUILD_NUMBER
-        
-                    withCredentials([string(
-                        credentialsId: 'dockerhub-token',
-                        variable: 'DOCKER_TOKEN'
-                    )]) {
+
+                    withCredentials([
+                        string(
+                            credentialsId: 'dockerhub-token',
+                            variable: 'DOCKER_TOKEN'
+                        )
+                    ]) {
                         bat '''
                             powershell -NoProfile -Command "$env:DOCKER_TOKEN | docker login -u 'abhijith006' --password-stdin"
                         '''
@@ -59,39 +59,46 @@ pipeline {
             }
         }
 
-        
-        
-stage('Deploy to Kubernetes') {
-    steps {
-        script {
-            withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withCredentials([
+                        file(
+                            credentialsId: 'kubeconfig',
+                            variable: 'KUBECONFIG'
+                        )
+                    ]) {
+                        def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
+                            ? "faulty-${env.BUILD_NUMBER}"
+                            : env.BUILD_NUMBER
 
-                def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
-                    ? "faulty-${env.BUILD_NUMBER}"
-                    : env.BUILD_NUMBER
+                        // Apply the Service only; preserve the current Deployment.
+                        bat 'kubectl apply -f deployment.yaml --dry-run=client -o yaml > nul'
 
-                // Apply only the Service; do not reset the running Deployment.
-                bat 'kubectl apply -f deployment.yaml -o yaml > deployment-applied.yaml'
-                bat 'kubectl apply -f deployment.yaml --prune=false'
+                        bat '''
+                            kubectl get service %SERVICE_NAME% > nul 2>&1
+                        '''
 
-                bat "kubectl set image deployment/%DEPLOYMENT% %CONTAINER_NAME%=%DOCKER_IMAGE%:${imageTag}"
+                        // Deploy the selected image.
+                        bat "kubectl set image deployment/%DEPLOYMENT% %CONTAINER_NAME%=%DOCKER_IMAGE%:${imageTag}"
 
-                int rolloutResult = bat(
-                    returnStatus: true,
-                    script: 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
-                )
+                        int rolloutResult = bat(
+                            returnStatus: true,
+                            script: 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
+                        )
 
-                if (rolloutResult != 0) {
-                    echo 'Deployment rollout failed. Rolling back.'
-                    bat 'kubectl rollout undo deployment/%DEPLOYMENT%'
-                    bat 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
-                    error('New version failed to deploy. Previous version restored.')
+                        if (rolloutResult != 0) {
+                            echo 'Deployment rollout failed. Attempting automatic rollback.'
+
+                            bat 'kubectl rollout undo deployment/%DEPLOYMENT%'
+                            bat 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
+
+                            error('New version failed. Previous Deployment revision restored.')
+                        }
+                    }
                 }
             }
         }
-    }
-}
-
 
         stage('Application Health Check') {
             steps {
@@ -105,17 +112,17 @@ stage('Deploy to Kubernetes') {
                         int healthResult = bat(
                             returnStatus: true,
                             script: '''
-                                kubectl run placement-health-check --rm -i --restart=Never --image=curlimages/curl:8.12.1 --command -- curl -fsS --max-time 5 http://placement-portal-service.default.svc.cluster.local/
+                                kubectl run placement-health-%BUILD_NUMBER% --rm -i --restart=Never --image=curlimages/curl:8.12.1 --command -- curl -fsS --max-time 10 http://placement-portal-service.default.svc.cluster.local/
                             '''
                         )
 
                         if (healthResult != 0) {
-                            echo 'Health check failed. Rolling back to the previous release.'
+                            echo 'Application health check failed. Rolling back.'
 
                             bat 'kubectl rollout undo deployment/%DEPLOYMENT%'
                             bat 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
 
-                            error('Application health check failed. Rollback completed.')
+                            error('Health check failed. Rollback attempted.')
                         }
                     }
                 }
@@ -130,12 +137,22 @@ stage('Deploy to Kubernetes') {
                         variable: 'KUBECONFIG'
                     )
                 ]) {
-                    bat 'kubectl get deployments'
+                    bat 'kubectl get deployment placement-portal'
                     bat 'kubectl get pods -o wide'
-                    bat 'kubectl get services'
+                    bat 'kubectl get service placement-portal-service'
+                    bat 'kubectl get deployment placement-portal -o jsonpath="{.spec.template.spec.containers[0].image}"'
                     bat 'kubectl rollout history deployment/placement-portal'
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully.'
+        }
+        failure {
+            echo 'Pipeline failed. Check the console output and rollback status.'
         }
     }
 }
