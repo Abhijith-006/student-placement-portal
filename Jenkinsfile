@@ -1,6 +1,16 @@
 pipeline {
     agent any
 
+    
+    parameters {
+        choice(
+            name: 'DEPLOY_MODE',
+            choices: ['NORMAL', 'FAULTY_TEST'],
+            description: 'Choose NORMAL for a regular deployment or FAULTY_TEST to test automatic rollback.'
+        )
+    }
+
+
     environment {
         DOCKER_IMAGE = 'abhijith006/student-placement-portal'
         DEPLOYMENT = 'placement-portal'
