@@ -60,34 +60,37 @@ pipeline {
         }
 
         
-        stage('Deploy to Kubernetes') {
-            steps {
-                script {
-                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-                        def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
-                            ? "faulty-${env.BUILD_NUMBER}"
-                            : env.BUILD_NUMBER
         
-                        // Apply the service without resetting the working deployment image.
-                        bat 'kubectl apply -f deployment.yaml --prune=false'
-        
-                        bat "kubectl set image deployment/%DEPLOYMENT% %CONTAINER_NAME%=%DOCKER_IMAGE%:${imageTag}"
-        
-                        int rolloutResult = bat(
-                            returnStatus: true,
-                            script: 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
-                        )
-        
-                        if (rolloutResult != 0) {
-                            echo 'Deployment rollout failed. Rolling back.'
-                            bat 'kubectl rollout undo deployment/%DEPLOYMENT%'
-                            bat 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
-                            error('New version failed to deploy. Previous version restored.')
-                        }
-                    }
+stage('Deploy to Kubernetes') {
+    steps {
+        script {
+            withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+
+                def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
+                    ? "faulty-${env.BUILD_NUMBER}"
+                    : env.BUILD_NUMBER
+
+                // Apply only the Service; do not reset the running Deployment.
+                bat 'kubectl apply -f deployment.yaml -o yaml > deployment-applied.yaml'
+                bat 'kubectl apply -f deployment.yaml --prune=false'
+
+                bat "kubectl set image deployment/%DEPLOYMENT% %CONTAINER_NAME%=%DOCKER_IMAGE%:${imageTag}"
+
+                int rolloutResult = bat(
+                    returnStatus: true,
+                    script: 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
+                )
+
+                if (rolloutResult != 0) {
+                    echo 'Deployment rollout failed. Rolling back.'
+                    bat 'kubectl rollout undo deployment/%DEPLOYMENT%'
+                    bat 'kubectl rollout status deployment/%DEPLOYMENT% --timeout=90s'
+                    error('New version failed to deploy. Previous version restored.')
                 }
             }
         }
+    }
+}
 
 
         stage('Application Health Check') {
