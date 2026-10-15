@@ -37,21 +37,24 @@ pipeline {
                 }
             }
         }
+        
         stage('Push Image to Docker Hub') {
             steps {
-                withCredentials([
-                    string(
+                script {
+                    def imageTag = params.DEPLOY_MODE == 'FAULTY_TEST'
+                        ? "faulty-${env.BUILD_NUMBER}"
+                        : env.BUILD_NUMBER
+        
+                    withCredentials([string(
                         credentialsId: 'dockerhub-token',
                         variable: 'DOCKER_TOKEN'
-                    )
-                ]) {
-                    bat '''
-                        powershell -NoProfile -Command "$env:DOCKER_TOKEN | docker login -u 'abhijith006' --password-stdin"
-                    '''
-
-                    bat 'docker push %DOCKER_IMAGE%:%BUILD_NUMBER%'
-
-                    bat 'docker logout'
+                    )]) {
+                        bat '''
+                            powershell -NoProfile -Command "$env:DOCKER_TOKEN | docker login -u 'abhijith006' --password-stdin"
+                        '''
+                        bat "docker push %DOCKER_IMAGE%:${imageTag}"
+                        bat 'docker logout'
+                    }
                 }
             }
         }
