@@ -25,12 +25,18 @@ pipeline {
             }
         }
 
+                
         stage('Build Docker Image') {
             steps {
-                bat 'docker build -t %DOCKER_IMAGE%:%BUILD_NUMBER% .'
+                script {
+                    if (params.DEPLOY_MODE == 'FAULTY_TEST') {
+                        bat 'docker build -f Dockerfile.faulty -t %DOCKER_IMAGE%:faulty-%BUILD_NUMBER% .'
+                    } else {
+                        bat 'docker build -t %DOCKER_IMAGE%:%BUILD_NUMBER% .'
+                    }
+                }
             }
         }
-
         stage('Push Image to Docker Hub') {
             steps {
                 withCredentials([
